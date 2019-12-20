@@ -1,5 +1,13 @@
 import csv
+import json
+import random
 import sys
+
+import brotli
+import rtree
+from pyproj import Transformer
+from shapely.errors import TopologicalError
+from shapely.geometry import shape, Point
 
 # Operating cost per vehicle KM travelled: 17.5 cents for operating and 5 cents
 # for depreciation and marginal insurance
@@ -50,11 +58,6 @@ ACTIVE_MODES = ["Walk", "Bike"]
 
 
 def main():
-    """
-    Calculate annual transportation cost per household and proportion of annual
-    income spent on transportation per household. Output a CSV where each row
-    represents a household and contains zone, cost, and proportion columns.
-    """
     if len(sys.argv) != 5:
         print("Error: Incorrect number of arguments. Expected 4.")
         print(
@@ -63,11 +66,23 @@ def main():
         )
         print(
             "Example: python main.py households_2020.csv "
-            "persons_2020.csv total_trips_2020.csv output_cost_proportion.csv"
+            "persons_2020.csv total_trips_2020.csv output_2020.csv"
         )
         exit(1)
 
     households_file, persons_file, trips_file, output_file = sys.argv[1:]
+
+    hh_data = calculate(households_file, persons_file, trips_file)
+    generate_points(hh_data, output_file)
+
+
+def calculate(households_file, persons_file, trips_file):
+    """
+    Calculate annual transportation cost per household and proportion of annual
+    income spent on transportation per household. Output a CSV where each row
+    represents a household and contains zone, cost, and proportion columns.
+    """
+    print("Calculating transportation costs...")
 
     # Total household data. Maps household ID to household data.
     hh_data = {}
@@ -150,14 +165,103 @@ def main():
             "proportion": round(proportion)
         })
 
-    # Write all processed households to the output file
-    with open(output_file, "w", newline="") as f:
-        fieldnames = ["zone", "cost", "proportion"]
-        writer = csv.DictWriter(f, fieldnames)
+    return output
+            
+            
+def generate_points(households, output_file):
+    """
+    For each household, generate a random point that falls within a residential
+    parcel boundary that is within its zone.
+    """
+    print("Generating points...")
+
+    # Open residences GeoJSON file
+    # Note: residences.json is not proper GeoJSON, it is edited to make it small
+    with open("config/residences.json.br", "rb") as f:
+        residences = json.loads(brotli.decompress(f.read()))
+
+    # Load spatial index and residence information
+    id_to_residence = {}  # Map residence ID to residence polygon
+    spatial_index = rtree.index.Index()  # R-Tree
+    residence_zones = set()  # Set of all zones that have at least one residence
+    for i, feature in enumerate(residences["features"]):
+        residence_zones.add(feature["properties"]["zone"])
+        polygon = shape(feature["geometry"])
+        spatial_index.insert(i, polygon.bounds)
+        id_to_residence[i] = polygon
+
+    # Open zones GeoJSON file
+    with open("config/zones.json", "r") as f:
+        zones = json.load(f)
+
+    # Load zone information
+    id_to_zone = {}  # Map zone ID to zone polygon
+    id_to_zone_bbox = {}  # Map zone ID to zone bounding box
+    for feature in zones["features"]:
+        feature_id = feature["properties"]["id"]
+        id_to_zone[feature_id] = shape(feature["geometry"])
+        bbox = shape(feature["geometry"]).bounds
+        id_to_zone_bbox[feature_id] = bbox
+        
+    with open(output_file, "w", newline="") as w:
+        fieldnames = ["lon", "lat", "cost", "proportion"]
+        writer = csv.DictWriter(w, fieldnames=fieldnames)
         writer.writeheader()
 
-        for household in output:
-            writer.writerow(household)
+        transformer = Transformer.from_crs("EPSG:3776", "EPSG:4326")
+
+        total_households = len(households)
+        for progress, hh in enumerate(households):
+            # Print progress
+            print("{} / {}".format(progress + 1, total_households))
+
+            zone = int(hh["zone"])
+            if zone not in id_to_zone:
+                continue
+            polygon = id_to_zone[zone]
+            bbox = id_to_zone_bbox[zone]
+
+            # Generate random points until one is within the zone and a
+            # residence within that zone (or skip the household if it misses
+            # 10000 times)
+            tries = 0
+            error = False
+            while True:
+                dest_x = random.uniform(bbox[0], bbox[2])
+                dest_y = random.uniform(bbox[1], bbox[3])
+                point = Point(dest_x, dest_y)
+                if polygon.contains(point):
+                    if zone in residence_zones:
+                        intersections = spatial_index.intersection(
+                            (point.x, point.y, point.x, point.y)
+                        )
+
+                        contains_point = []
+                        for i in intersections:
+                            try:
+                                contains_point.append(
+                                    id_to_residence[i].contains(point)
+                                )
+                            except TopologicalError:
+                                continue
+
+                        if any(contains_point):
+                            break
+                    else:
+                        break
+                if tries == 10000:
+                    break
+                tries += 1
+
+            if tries < 10000 and not error:
+                lat, lon = transformer.transform(dest_x, dest_y)
+
+                writer.writerow({
+                    "lon": round(lon, 5),
+                    "lat": round(lat, 5),
+                    "cost": hh["cost"],
+                    "proportion": hh["proportion"]
+                })
 
 
 if __name__ == "__main__":
