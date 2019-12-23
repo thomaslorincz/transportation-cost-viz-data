@@ -2,11 +2,19 @@
 This project creates data for the [transportation-cost-viz](https://github.com/thomaslorincz/transportation-cost-viz) project
 ## Requirements
 - Python 3.x
-- Create a [virtual environment](https://docs.python.org/3/tutorial/venv.html): ```python -m venv venv```
-- Activate the virtual environment:
+## Dependencies
+1. Create a [virtual environment](https://docs.python.org/3/tutorial/venv.html): ```python -m venv venv```
+2. Activate the virtual environment:
     - Windows: ```venv\Scripts\activate.bat```
     - Unix or MacOS: ```source venv/bin/activate```
-- Install requirements: ```pip install -r requirements.txt```
+3. Install Rtree:
+    - Windows:
+        - Download the appropriate binary for your environment [here](https://www.lfd.uci.edu/~gohlke/pythonlibs/#rtree)
+        - ```pip install <path to Rtree binary>```
+    - Other platforms:
+        - Ensure [libspatialindex](https://libspatialindex.org/) 1.8.5+ is installed
+        - ```pip install Rtree```
+4. Install other requirements: ```pip install -r requirements.txt```
 ## Configuration
 The data generation script (main.py) requires 2 GeoJSON config files:  ```zones.json``` and ```residences.json.br```.
 ### zones.json
